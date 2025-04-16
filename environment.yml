@@ -1,0 +1,23 @@
+name: oanet-gpu
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  - python=3.8
+  - pip=23.3
+  - numpy=1.24.4
+  - h5py=3.9.0
+  - matplotlib=3.7.1
+  - tqdm=4.66.1
+
+  # PyTorch 2.1 + CUDA 12.1
+  - pytorch=2.1.0
+  - torchvision=0.16.0
+  - torchaudio=2.1.0
+  - pytorch-cuda=12.1
+
+  - pip:
+      - opencv-contrib-python==4.8.1.78
