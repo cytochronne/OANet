@@ -30,6 +30,10 @@ class KITTISequence(object):
         self.desc_name = desc_name
         print('dump dir ' + self.dump_dir)
         
+        # Get the sequence ID from the data path
+        self.seq_id = os.path.basename(os.path.normpath(self.data_path))
+        print(f"Processing sequence: {self.seq_id}")
+        
         # Create output directories
         if not os.path.exists(self.dump_dir):
             os.makedirs(self.dump_dir)
@@ -60,6 +64,35 @@ class KITTISequence(object):
                 self.pairs = pickle.load(f)
                 
         print(f'Created {len(self.pairs)} image pairs')
+        
+        # Try to load ground truth poses if available
+        self.poses_rel = self.load_ground_truth_poses()
+
+    def load_ground_truth_poses(self):
+        """Load ground truth relative poses from poses_rel directory"""
+        poses_dir = os.path.join(os.path.dirname(os.path.dirname(self.data_path)), "poses_rel")
+        poses_file = os.path.join(poses_dir, f"{self.seq_id}.txt")
+        
+        poses = {}
+        if not os.path.exists(poses_file):
+            print(f"Warning: Ground truth poses file not found: {poses_file}")
+            return poses
+            
+        try:
+            with open(poses_file, 'r') as f:
+                for i, line in enumerate(f):
+                    values = [float(v) for v in line.strip().split()]
+                    if len(values) == 12:  # 9 for R + 3 for t
+                        # Extract R (first 9 values) and t (last 3 values)
+                        R_true = np.array(values[:9]).reshape(3, 3).astype(np.float32)
+                        t_true = np.array(values[9:]).reshape(3, 1).astype(np.float32)
+                        poses[i] = (R_true, t_true)
+            
+            print(f"Loaded {len(poses)} ground truth poses for sequence {self.seq_id}")
+        except Exception as e:
+            print(f"Error loading ground truth poses: {e}")
+        
+        return poses
 
     def load_calib(self, calib_file):
         """Load KITTI calibration file"""
@@ -201,7 +234,17 @@ class KITTISequence(object):
                 # Format x1 and x2 as in YFCC
                 xs = np.concatenate([x1, x2], axis=1).reshape(1, -1, 4)
                 
-                return xs, ys, R, t, ratio_test, mutual_nearest, cx, cy, f[0], cx, cy, f[0]
+                # Get ground truth R and t from poses_rel if available
+                R_true = None
+                t_true = None
+                if ii in self.poses_rel:
+                    R_true, t_true = self.poses_rel[ii]
+                
+                # Return tuple including R_true and t_true if available
+                if R_true is not None and t_true is not None:
+                    return xs, ys, R, t, ratio_test, mutual_nearest, cx, cy, f[0], cx, cy, f[0], R_true, t_true
+                else:
+                    return xs, ys, R, t, ratio_test, mutual_nearest, cx, cy, f[0], cx, cy, f[0]
         except Exception as e:
             print(f"Error processing pair {ii}, {jj}: {e}")
         
@@ -211,8 +254,11 @@ class KITTISequence(object):
         """Create and save training data for all pairs"""
         ready_file = os.path.join(self.dump_dir, "ready")
         var_name = ['xs', 'ys', 'Rs', 'ts', 'ratios', 'mutuals', 'cx1s', 'cy1s', 'f1s', 'cx2s', 'cy2s', 'f2s']
+        # Add ground truth R and t variables
+        var_name_gt = ['Rs_true', 'ts_true']
+        
         res_dict = {}
-        for name in var_name:
+        for name in var_name + var_name_gt:
             res_dict[name] = []
             
         if not os.path.exists(ready_file):
@@ -223,17 +269,41 @@ class KITTISequence(object):
                 sys.stdout.flush()
                 res = self.make_xy(pair[0], pair[1])
                 if len(res) != 0:
+                    # Copy standard data
                     for var_idx, name in enumerate(var_name):
-                        res_dict[name] += [res[var_idx]]
+                        if var_idx < len(res):
+                            res_dict[name] += [res[var_idx]]
+                    
+                    # Copy ground truth data if available
+                    if len(res) > len(var_name):  # Ground truth data is available
+                        res_dict['Rs_true'] += [res[len(var_name)]]
+                        res_dict['ts_true'] += [res[len(var_name) + 1]]
+                    # If ground truth not available for this pair but we want to keep consistent size
+                    elif success_count > 0 and 'Rs_true' in res_dict and len(res_dict['Rs_true']) > 0:
+                        # Add placeholder values of same shape as previous entries
+                        prev_R_shape = res_dict['Rs_true'][0].shape if res_dict['Rs_true'] else (3, 3)
+                        prev_t_shape = res_dict['ts_true'][0].shape if res_dict['ts_true'] else (3, 1)
+                        res_dict['Rs_true'] += [np.zeros(prev_R_shape, dtype=np.float32)]
+                        res_dict['ts_true'] += [np.zeros(prev_t_shape, dtype=np.float32)]
+                        
                     success_count += 1
             
             print(f"\nSuccessfully processed {success_count}/{len(self.pairs)} pairs")
             
             if success_count > 0:
+                # Save standard variables
                 for name in var_name:
-                    out_file_name = os.path.join(self.dump_dir, name) + ".pkl"
-                    with open(out_file_name, "wb") as ofp:
-                        pickle.dump(res_dict[name], ofp)
+                    if res_dict[name]:  # Only save if there's data
+                        out_file_name = os.path.join(self.dump_dir, name) + ".pkl"
+                        with open(out_file_name, "wb") as ofp:
+                            pickle.dump(res_dict[name], ofp)
+                
+                # Save ground truth variables if available
+                for name in var_name_gt:
+                    if res_dict[name]:  # Only save if there's data
+                        out_file_name = os.path.join(self.dump_dir, name) + ".pkl"
+                        with open(out_file_name, "wb") as ofp:
+                            pickle.dump(res_dict[name], ofp)
                         
                 # Mark ready
                 with open(ready_file, "w") as ofp:

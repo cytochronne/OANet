@@ -20,9 +20,9 @@ parser.add_argument('--vis_th', type=int, default=50,
   help='visibility threshold (not used for KITTI but kept for compatibility)')
 parser.add_argument('--pair_num', type=int, default=1000,
   help='pair num. 1000 for test seq')
-parser.add_argument('--sequences', type=str, default='00,01,02,03,04,05,06,07,08,09,10',
+parser.add_argument('--sequences', type=str, default='00',
   help='KITTI sequences to process, comma separated')
-parser.add_argument('--output_file', type=str, default='kitti-sift-1000-test.hdf5',
+parser.add_argument('--output_file', type=str, default='kitti-00-sift-1000-test.hdf5',
   help='Output HDF5 filename')
 
 class KITTIDataset:
@@ -52,10 +52,46 @@ class KITTIDataset:
         # Process data
         self.process_data()
     
+    def load_poses_rel(self, seq):
+        """Load ground truth relative poses for a sequence
+        
+        Args:
+            seq: Sequence ID (e.g., "00")
+            
+        Returns:
+            Dictionary mapping frame indices to (R_true, t_true) tuples
+        """
+        poses_path = os.path.join(self.dataset_path, "poses_rel", f"{seq}.txt")
+        if not os.path.exists(poses_path):
+            print(f"Warning: Ground truth poses file not found: {poses_path}")
+            return {}
+            
+        poses = {}
+        try:
+            with open(poses_path, 'r') as f:
+                for i, line in enumerate(f):
+                    values = [float(v) for v in line.strip().split()]
+                    if len(values) != 12:  # 9 for R + 3 for t
+                        print(f"Warning: Invalid line format in {poses_path}, line {i+1}")
+                        continue
+                        
+                    # Extract R (first 9 values) and t (last 3 values)
+                    R_true = np.array(values[:9]).reshape(3, 3).astype(np.float32)
+                    t_true = np.array(values[9:]).reshape(3, 1).astype(np.float32)
+                    
+                    poses[i] = (R_true, t_true)
+            
+            print(f"Loaded {len(poses)} ground truth poses for sequence {seq}")
+            return poses
+        except Exception as e:
+            print(f"Error loading ground truth poses from {poses_path}: {e}")
+            return {}
+    
     def collect(self):
         """Collect data from all sequences into a single HDF5 file"""
         data_types = ['xs', 'ys', 'Rs', 'ts', 'ratios', 'mutuals',
-                     'cx1s', 'cy1s', 'f1s', 'cx2s', 'cy2s', 'f2s']
+                     'cx1s', 'cy1s', 'f1s', 'cx2s', 'cy2s', 'f2s',
+                     'Rs_true', 'ts_true']  # Added Rs_true and ts_true
         
         # Create output directory if needed
         os.makedirs(os.path.dirname(self.dump_file), exist_ok=True)
@@ -83,6 +119,9 @@ class KITTIDataset:
                 # Load sequence data
                 data_seq = {}
                 for tp in data_types:
+                    if tp in ['Rs_true', 'ts_true']:
+                        continue  # These are loaded separately
+                        
                     pkl_file = os.path.join(seq_dump_dir, f"{tp}.pkl")
                     if os.path.exists(pkl_file):
                         with open(pkl_file, 'rb') as fp:
@@ -91,6 +130,16 @@ class KITTIDataset:
                         print(f"  Warning: {tp}.pkl not found for sequence {seq}")
                         data_seq[tp] = []
                 
+                # Load ground truth poses data
+                gt_poses = self.load_poses_rel(seq)
+                
+                # Load image pairs information to match with ground truth poses
+                pairs_file = os.path.join(seq_dump_dir, "pairs.pkl")
+                pairs = []
+                if os.path.exists(pairs_file):
+                    with open(pairs_file, 'rb') as fp:
+                        pairs = pickle.load(fp)
+                        
                 # Check if we have data
                 if not data_seq.get('xs', []):
                     print(f"  No data found for sequence {seq}")
@@ -102,14 +151,30 @@ class KITTIDataset:
                 
                 # Add data to HDF5 file
                 for i in range(seq_len):
+                    # Add standard data
                     for tp in data_types:
+                        if tp in ['Rs_true', 'ts_true']:
+                            continue  # Handle these separately
+                            
                         if tp in data_seq and i < len(data_seq[tp]):
                             data_item = data_seq[tp][i]
                             if tp in ['cx1s', 'cy1s', 'cx2s', 'cy2s', 'f1s', 'f2s']:
-                                
                                 data_item = np.asarray([data_item]) if not isinstance(data_item, np.ndarray) else data_item
                             data_i = data[tp].create_dataset(str(pair_idx), data_item.shape, dtype='float32')
                             data_i[:] = data_item
+                    
+                    # Add ground truth poses if available
+                    if i < len(pairs) and pairs[i][0] in gt_poses:
+                        frame_idx = pairs[i][0]
+                        R_true, t_true = gt_poses[frame_idx]
+                        
+                        # Create datasets for ground truth R and t
+                        data_R_true = data['Rs_true'].create_dataset(str(pair_idx), R_true.shape, dtype='float32')
+                        data_R_true[:] = R_true
+                        
+                        data_t_true = data['ts_true'].create_dataset(str(pair_idx), t_true.shape, dtype='float32')
+                        data_t_true[:] = t_true
+                    
                     pair_idx += 1
                 
                 print(f"  Pair index now: {pair_idx}")
@@ -147,6 +212,10 @@ class KITTIDataset:
             
             print('Processing image pairs...')
             sequence.dump_datasets()
+            
+            # Save the pairs information for later use in matching with ground truth poses
+            with open(os.path.join(seq_dump_dir, "pairs.pkl"), 'wb') as f:
+                pickle.dump(sequence.pairs, f)
         
         # Collect data from all sequences
         print('\nCollecting data from all sequences...')
