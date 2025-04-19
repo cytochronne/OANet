@@ -20,9 +20,9 @@ parser.add_argument('--vis_th', type=int, default=50,
   help='visibility threshold (not used for KITTI but kept for compatibility)')
 parser.add_argument('--pair_num', type=int, default=1000,
   help='pair num. 1000 for test seq')
-parser.add_argument('--sequences', type=str, default='00',
+parser.add_argument('--sequences', type=str, default='00,01,02,03,04,05,06,07,08,09,10',
   help='KITTI sequences to process, comma separated')
-parser.add_argument('--output_file', type=str, default='kitti-00-sift-1000-test.hdf5',
+parser.add_argument('--output_file', type=str, default='kitti-08-sift-1000-test.hdf5',
   help='Output HDF5 filename')
 
 class KITTIDataset:

@@ -56,9 +56,7 @@ class KITTISequence(object):
                 self.pairs.append((i, i + 1))
             
             # Randomly select pairs if we have too many
-            if len(self.pairs) > pair_num:
-                np.random.seed(1234)
-                self.pairs = [self.pairs[i] for i in np.random.permutation(len(self.pairs))[:pair_num]]
+            
         else:
             with open(pair_name, 'rb') as f:
                 self.pairs = pickle.load(f)
